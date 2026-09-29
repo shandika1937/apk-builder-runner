@@ -1,0 +1,202 @@
+name: Android & Flutter Cloud APK Builder
+
+on:
+  workflow_dispatch:
+    inputs:
+      job_id:
+        description: 'Unique Build Job ID'
+        required: true
+        type: string
+      user_id:
+        description: 'Telegram User ID'
+        required: false
+        type: string
+        default: '0'
+      project_path:
+        description: 'Relative path or directory of the project'
+        required: false
+        type: string
+        default: '.'
+      project_type:
+        description: 'Project type: auto, android, flutter, apk_base'
+        required: false
+        type: string
+        default: 'auto'
+      variant:
+        description: 'Build Variant (debug / release)'
+        required: false
+        type: string
+        default: 'debug'
+
+jobs:
+  build:
+    name: Build APK (${{ inputs.job_id }})
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+
+    steps:
+      - name: 📥 Checkout Repository Code
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 1
+
+      - name: 🔍 Detect Project Structure
+        id: detect
+        run: |
+          PROJ_DIR="${{ inputs.project_path }}"
+          if [ ! -d "$PROJ_DIR" ] && [ "$PROJ_DIR" != "." ]; then
+            echo "Searching for project root containing build files..."
+            if [ -d "builds/${{ inputs.user_id }}/${{ inputs.job_id }}" ]; then
+              PROJ_DIR="builds/${{ inputs.user_id }}/${{ inputs.job_id }}"
+            fi
+          fi
+          
+          echo "proj_dir=$PROJ_DIR" >> $GITHUB_OUTPUT
+          
+          # Detect framework
+          if [ -f "$PROJ_DIR/pubspec.yaml" ] || [ -f "$PROJ_DIR/pubspec.yml" ]; then
+            echo "type=flutter" >> $GITHUB_OUTPUT
+            echo "Framework: Flutter Project detected"
+          elif [ -f "$PROJ_DIR/build.gradle" ] || [ -f "$PROJ_DIR/build.gradle.kts" ] || [ -f "$PROJ_DIR/settings.gradle" ] || [ -f "$PROJ_DIR/settings.gradle.kts" ]; then
+            echo "type=android" >> $GITHUB_OUTPUT
+            echo "Framework: Android Gradle Project detected"
+          elif ls "$PROJ_DIR"/*.apk 1> /dev/null 2>&1; then
+            echo "type=apk_base" >> $GITHUB_OUTPUT
+            echo "Framework: Base APK file detected"
+          else
+            echo "type=android" >> $GITHUB_OUTPUT
+            echo "Framework: Default to Android Gradle"
+          fi
+
+      # ----------------------------------------------------
+      # SETUP JAVA & GRADLE (For Android / Flutter / Base APK)
+      # ----------------------------------------------------
+      - name: ☕ Setup Java JDK 17
+        uses: actions/setup-java@v4
+        with:
+          distribution: 'temurin'
+          java-version: '17'
+          cache: 'gradle'
+
+      - name: 📱 Setup Android SDK Tools
+        uses: android-actions/setup-android@v3
+
+      # ----------------------------------------------------
+      # SETUP FLUTTER (If Flutter project detected)
+      # ----------------------------------------------------
+      - name: 🐦 Setup Flutter SDK
+        if: steps.detect.outputs.type == 'flutter' || inputs.project_type == 'flutter'
+        uses: subosito/flutter-action@v2
+        with:
+          flutter-version: '3.24.x'
+          channel: 'stable'
+          cache: true
+
+      # ----------------------------------------------------
+      # FLUTTER BUILD PIPELINE
+      # ----------------------------------------------------
+      - name: 🔨 Build Flutter APK
+        if: steps.detect.outputs.type == 'flutter' || inputs.project_type == 'flutter'
+        working-directory: ${{ steps.detect.outputs.proj_dir }}
+        run: |
+          echo "=== Starting Flutter Build ==="
+          flutter pub get
+          if [ "${{ inputs.variant }}" = "release" ]; then
+            flutter build apk --release --no-tree-shake-icons || flutter build apk --release
+          else
+            flutter build apk --debug --no-tree-shake-icons || flutter build apk --debug
+          fi
+
+      # ----------------------------------------------------
+      # ANDROID GRADLE BUILD PIPELINE
+      # ----------------------------------------------------
+      - name: 🔨 Build Android Gradle APK
+        if: steps.detect.outputs.type == 'android' || inputs.project_type == 'android'
+        working-directory: ${{ steps.detect.outputs.proj_dir }}
+        run: |
+          echo "=== Starting Android Gradle Build ==="
+          if [ -f "./gradlew" ]; then
+            # Fix Windows CRLF line endings on gradlew if present
+            sed -i 's/\r$//' ./gradlew
+            chmod +x ./gradlew
+            GRADLE_CMD="./gradlew"
+          else
+            echo "gradlew wrapper not found, using system gradle"
+            GRADLE_CMD="gradle"
+          fi
+          
+          TASK="assembleDebug"
+          if [ "${{ inputs.variant }}" = "release" ]; then
+            TASK="assembleRelease"
+          fi
+          
+          echo "Executing: $GRADLE_CMD $TASK --stacktrace --no-daemon"
+          $GRADLE_CMD $TASK --stacktrace --no-daemon
+
+      # ----------------------------------------------------
+      # APK BASE PROCESSING & SIGNING PIPELINE
+      # ----------------------------------------------------
+      - name: 📦 Process & Sign Base APK
+        if: steps.detect.outputs.type == 'apk_base' || inputs.project_type == 'apk_base'
+        working-directory: ${{ steps.detect.outputs.proj_dir }}
+        run: |
+          echo "=== Processing Base APK ==="
+          APK_IN=$(ls *.apk | head -n 1)
+          echo "Found Base APK: $APK_IN"
+          
+          # Generate debug keystore if missing
+          if [ ! -f "debug.keystore" ]; then
+            keytool -genkeypair -v -keystore debug.keystore -storepass android -alias androiddebugkey -keypass android -keyalg RSA -keysize 2048 -validity 10000 -dname "CN=Android Debug,O=Android,C=US"
+          fi
+          
+          # Sign using apksigner / jarsigner
+          jarsigner -verbose -sigalg SHA256withRSA -digestalg SHA-256 -keystore debug.keystore -storepass android -keypass android "$APK_IN" androiddebugkey
+          mkdir -p build/outputs/apk/debug
+          cp "$APK_IN" build/outputs/apk/debug/app-debug.apk
+
+      # ----------------------------------------------------
+      # LOCATE AND COLLECT OUTPUT APK
+      # ----------------------------------------------------
+      - name: 📦 Locate Output APK
+        id: collect
+        run: |
+          mkdir -p dist-apk
+          
+          # Search for any generated APK files
+          APK_FILES=$(find . -name "*.apk" -not -path "*/dist-apk/*" -not -path "*/.gradle/*" -not -path "*/builds/*input*")
+          
+          echo "Discovered APK files:"
+          echo "$APK_FILES"
+          
+          PRIMARY_APK=$(echo "$APK_FILES" | head -n 1)
+          
+          if [ -z "$PRIMARY_APK" ] || [ ! -f "$PRIMARY_APK" ]; then
+            echo "❌ ERROR: No APK file was generated by the build process."
+            exit 1
+          fi
+          
+          APK_SIZE=$(stat -c%s "$PRIMARY_APK" 2>/dev/null || stat -f%z "$PRIMARY_APK" 2>/dev/null || echo 0)
+          
+          if [ "$APK_SIZE" -le 0 ]; then
+            echo "❌ ERROR: Generated APK is empty (0 bytes)."
+            exit 1
+          fi
+          
+          DEST_NAME="app-${{ inputs.variant }}-${{ inputs.job_id }}.apk"
+          cp "$PRIMARY_APK" "dist-apk/$DEST_NAME"
+          echo "✅ Copied $PRIMARY_APK to dist-apk/$DEST_NAME ($APK_SIZE bytes)"
+          
+          echo "apk_path=dist-apk/$DEST_NAME" >> $GITHUB_OUTPUT
+          echo "apk_name=$DEST_NAME" >> $GITHUB_OUTPUT
+          echo "apk_size=$APK_SIZE" >> $GITHUB_OUTPUT
+
+      # ----------------------------------------------------
+      # UPLOAD APK ARTIFACT TO GITHUB
+      # ----------------------------------------------------
+      - name: 🚀 Upload APK Artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: apk-output-${{ inputs.job_id }}
+          path: dist-apk/*.apk
+          retention-days: 7
+          if-no-files-found: error
