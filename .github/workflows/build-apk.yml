@@ -45,7 +45,7 @@ jobs:
       - name: 📥 Checkout Repository Code
         uses: actions/checkout@v4
         with:
-          ref: ${{ inputs.branch_name != "" && inputs.branch_name || github.ref }}
+          ref: ${{ inputs.branch_name != '' && inputs.branch_name || github.ref }}
           fetch-depth: 1
 
       - name: 🔍 Detect Project Structure
@@ -98,30 +98,27 @@ jobs:
 
       - name: 🐘 Setup Gradle
         uses: gradle/actions/setup-gradle@v4
-        if: steps.detect.outputs.type == "android"
+        if: steps.detect.outputs.type == 'android'
 
       - name: 📱 Accept Android SDK Licenses
         run: |
           yes | /usr/local/lib/android/sdk/cmdline-tools/latest/bin/sdkmanager --licenses 2>/dev/null || true
 
-      - name: 🐦 Setup Flutter SDK (Latest Stable)
-        if: steps.detect.outputs.type == "flutter"
+      - name: 🐦 Setup Flutter SDK
+        if: steps.detect.outputs.type == 'flutter'
         uses: subosito/flutter-action@v2
         with:
-          channel: "stable"
-          cache: true
+          flutter-version: "3.47.5"
+          cache: false
 
       - name: 🔨 Build Flutter APK
-        if: steps.detect.outputs.type == "flutter"
+        if: steps.detect.outputs.type == 'flutter'
         working-directory: ${{ steps.detect.outputs.proj_dir }}
         run: |
           echo "=== Building Flutter APK ==="
-          # Auto-adapt SDK version in pubspec.yaml if solver fails
-          flutter pub get || (
-            echo "Adjusting SDK constraints in pubspec.yaml for compatibility..."
-            sed -i "s/sdk: .*/sdk: \">=3.0.0 <4.0.0\"/" pubspec.yaml 2>/dev/null || true
-            flutter pub upgrade || flutter pub get
-          )
+          git config --global --add safe.directory "*" || true
+          flutter doctor -v
+          flutter pub get
           if [ "${{ inputs.variant }}" = "release" ]; then
             flutter build apk --release --no-tree-shake-icons || flutter build apk --release
           else
@@ -129,7 +126,7 @@ jobs:
           fi
 
       - name: 🔨 Build Android Gradle APK
-        if: steps.detect.outputs.type == "android"
+        if: steps.detect.outputs.type == 'android'
         working-directory: ${{ steps.detect.outputs.proj_dir }}
         run: |
           echo "=== Building Android Gradle APK ==="
@@ -148,7 +145,7 @@ jobs:
           $GRADLE_CMD $TASK --stacktrace --no-daemon
 
       - name: 📦 Process & Sign Base APK
-        if: steps.detect.outputs.type == "apk_base"
+        if: steps.detect.outputs.type == 'apk_base'
         working-directory: ${{ steps.detect.outputs.proj_dir }}
         run: |
           echo "=== Processing Base APK ==="
