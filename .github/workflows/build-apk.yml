@@ -111,6 +111,59 @@ jobs:
           channel: "stable"
           cache: false
 
+      - name: 🔎 Diagnose Flutter Project
+        if: steps.detect.outputs.type == 'flutter'
+        working-directory: ${{ steps.detect.outputs.proj_dir }}
+        run: |
+          echo "========================================="
+          echo "🔎 DIAGNOSE FLUTTER PROJECT"
+          echo "========================================="
+
+          # Versions
+          echo -n "Flutter: " && (flutter --version 2>&1 | head -n 1) || echo "Unknown"
+          echo -n "Dart: " && (dart --version 2>&1) || echo "Unknown"
+          echo -n "Java: " && (java -version 2>&1 | head -n 1) || echo "Unknown"
+
+          GRADLE_WRAPPER_FILE=$(find . -name "gradle-wrapper.properties" | head -n 1)
+          if [ -n "$GRADLE_WRAPPER_FILE" ]; then
+            GRADLE_VER=$(grep "distributionUrl" "$GRADLE_WRAPPER_FILE" | sed 's/.*gradle-\([0-9.]*\)-.*/\1/' || echo "Unknown")
+            echo "Gradle: $GRADLE_VER (from $GRADLE_WRAPPER_FILE)"
+          else
+            echo "Gradle: Not specified (wrapper missing)"
+          fi
+
+          # AGP version from settings or build.gradle
+          AGP_VER=$(grep -rn "com.android.application" . 2>/dev/null | grep "version" | head -n 1 | sed 's/.*version\s*["'\'']\([^"'\'']*\).*/\1/' || echo "Unknown")
+          echo "AGP: ${AGP_VER:-Unknown}"
+
+          # compileSdk, targetSdk, minSdk
+          COMPILE_SDK=$(grep -rn "compileSdk" android/ 2>/dev/null | head -n 1 | sed 's/[^0-9]*//g' || echo "Unknown")
+          TARGET_SDK=$(grep -rn "targetSdk" android/ 2>/dev/null | head -n 1 | sed 's/[^0-9]*//g' || echo "Unknown")
+          MIN_SDK=$(grep -rn "minSdk" android/ 2>/dev/null | head -n 1 | sed 's/[^0-9]*//g' || echo "Unknown")
+          echo "compileSdk: ${COMPILE_SDK:-34}"
+          echo "targetSdk: ${TARGET_SDK:-34}"
+          echo "minSdk: ${MIN_SDK:-21}"
+
+          echo "Project type: Flutter"
+
+          # Check pub dependencies
+          echo -n "Pub dependencies: "
+          if flutter pub get -v > pub_diag.log 2>&1; then
+            echo "OK"
+          else
+            echo "FAILED"
+            cat pub_diag.log | tail -n 25
+          fi
+
+          # Android configuration
+          echo -n "Android configuration: "
+          if [ -d "android" ] && ( [ -f "android/build.gradle" ] || [ -f "android/build.gradle.kts" ] ); then
+            echo "OK"
+          else
+            echo "FAILED"
+          fi
+          echo "========================================="
+
       - name: 🔨 Build Flutter APK
         if: steps.detect.outputs.type == 'flutter'
         working-directory: ${{ steps.detect.outputs.proj_dir }}
@@ -119,33 +172,48 @@ jobs:
           git config --global --add safe.directory "*" || true
 
           echo "=== Applying AGP & Flutter Compatibility Fixes ==="
-          # Fix AGP 9+ DSL incompatibility ('android.newDsl' error)
+          # Fix 1: Upgrade Gradle wrapper to 8.14 if project has older Gradle < 8.14
+          find . -name "gradle-wrapper.properties" | while read -r pFile; do
+            echo "Upgrading wrapper in $pFile to gradle-8.14-all.zip..."
+            sed -i 's/gradle-[0-9.]*-\(all\|bin\)\.zip/gradle-8.14-all.zip/g' "$pFile"
+          done
+
+          # Fix 2: AGP compatibility flags
           mkdir -p ~/.gradle
           touch ~/.gradle/gradle.properties
           grep -q "android.newDsl" ~/.gradle/gradle.properties && sed -i 's/android.newDsl=true/android.newDsl=false/g' ~/.gradle/gradle.properties || echo "android.newDsl=false" >> ~/.gradle/gradle.properties
           grep -q "android.builtInKotlin" ~/.gradle/gradle.properties && sed -i 's/android.builtInKotlin=true/android.builtInKotlin=false/g' ~/.gradle/gradle.properties || echo "android.builtInKotlin=false" >> ~/.gradle/gradle.properties
-          grep -q "org.gradle.jvmargs" ~/.gradle/gradle.properties || echo "org.gradle.jvmargs=-Xmx3072m -XX:MaxMetaspaceSize=1024m" >> ~/.gradle/gradle.properties
+          grep -q "org.gradle.jvmargs" ~/.gradle/gradle.properties || echo "org.gradle.jvmargs=-Xmx4096m -XX:MaxMetaspaceSize=1024m" >> ~/.gradle/gradle.properties
 
-          # Patch all project gradle.properties
           find . -name "gradle.properties" | while read -r pFile; do
             echo "Patching $pFile for android.newDsl compatibility"
             grep -q "android.newDsl" "$pFile" && sed -i 's/android.newDsl=true/android.newDsl=false/g' "$pFile" || echo "android.newDsl=false" >> "$pFile"
             grep -q "android.builtInKotlin" "$pFile" && sed -i 's/android.builtInKotlin=true/android.builtInKotlin=false/g' "$pFile" || echo "android.builtInKotlin=false" >> "$pFile"
           done
 
-          # Ensure android/gradle.properties exists and is patched
           if [ -d "android" ]; then
             touch android/gradle.properties
             grep -q "android.newDsl" android/gradle.properties && sed -i 's/android.newDsl=true/android.newDsl=false/g' android/gradle.properties || echo "android.newDsl=false" >> android/gradle.properties
             grep -q "android.builtInKotlin" android/gradle.properties && sed -i 's/android.builtInKotlin=true/android.builtInKotlin=false/g' android/gradle.properties || echo "android.builtInKotlin=false" >> android/gradle.properties
           fi
 
+          echo "Running flutter doctor..."
           flutter doctor -v
-          flutter pub get
+
+          echo "Running flutter pub get..."
+          flutter pub get -v
+
+          echo "Running flutter analyze suggestions..."
+          flutter analyze --suggestions || true
+
+          echo "Running flutter build apk..."
+          BUILD_FLAGS="--no-tree-shake-icons --android-skip-build-dependency-validation -v"
+          mkdir -p "$GITHUB_WORKSPACE/dist-logs"
+
           if [ "${{ inputs.variant }}" = "release" ]; then
-            flutter build apk --release --no-tree-shake-icons || flutter build apk --release
+            flutter build apk --release $BUILD_FLAGS 2>&1 | tee "$GITHUB_WORKSPACE/dist-logs/build_flutter.log"
           else
-            flutter build apk --debug --no-tree-shake-icons || flutter build apk --debug
+            flutter build apk --debug $BUILD_FLAGS 2>&1 | tee "$GITHUB_WORKSPACE/dist-logs/build_flutter.log"
           fi
 
       - name: 🔨 Build Android Gradle APK
@@ -229,16 +297,21 @@ jobs:
           DEST_NAME="app-${{ inputs.variant }}-${{ inputs.job_id }}.apk"
           TARGET_APK="dist-apk/$DEST_NAME"
 
-          if [ ! -f "$TARGET_APK" ]; then
+          # Requirement #10: Search for output APKs in Flutter, Gradle, and dist locations
+          PRIMARY_APK=""
+          FLUTTER_APK=$(find build/app/outputs/flutter-apk build/app/outputs/apk app/build/outputs/apk -name "*.apk" 2>/dev/null | head -n 1)
+          if [ -n "$FLUTTER_APK" ] && [ -f "$FLUTTER_APK" ]; then
+            PRIMARY_APK="$FLUTTER_APK"
+          else
             APK_FILES=$(find . -name "*.apk" -not -path "*/dist-apk/*" -not -path "*/.gradle/*" -not -path "*/builds/*input*" | sort -n)
             PRIMARY_APK=$(echo "$APK_FILES" | head -n 1)
-            if [ -n "$PRIMARY_APK" ] && [ -f "$PRIMARY_APK" ]; then
-              cp "$PRIMARY_APK" "$TARGET_APK"
-            fi
           fi
 
-          if [ ! -f "$TARGET_APK" ]; then
-            echo "ERROR: No APK file was generated."
+          if [ -n "$PRIMARY_APK" ] && [ -f "$PRIMARY_APK" ]; then
+            echo "✅ APK FOUND: $PRIMARY_APK"
+            cp "$PRIMARY_APK" "$TARGET_APK"
+          else
+            echo "❌ BUILD FAILED: APK tidak ditemukan"
             exit 1
           fi
 
@@ -288,3 +361,15 @@ jobs:
           path: dist-apk/*.apk
           retention-days: 7
           if-no-files-found: error
+
+      - name: 📄 Upload Build Logs
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: build-logs-${{ inputs.job_id }}
+          path: |
+            dist-logs/*.log
+            **/build_flutter.log
+            **/pub_diag.log
+          retention-days: 7
+          if-no-files-found: ignore
