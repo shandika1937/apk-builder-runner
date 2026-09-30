@@ -17,6 +17,11 @@ on:
         required: false
         type: string
         default: '.'
+      branch_name:
+        description: 'Specific Branch to checkout'
+        required: false
+        type: string
+        default: ''
       project_type:
         description: 'Project type: auto, android, flutter, apk_base'
         required: false
@@ -38,16 +43,24 @@ jobs:
       - name: 📥 Checkout Repository Code
         uses: actions/checkout@v4
         with:
+          ref: ${{ inputs.branch_name != '' && inputs.branch_name || github.ref }}
           fetch-depth: 1
 
       - name: 🔍 Detect Project Structure
         id: detect
         run: |
           PROJ_DIR="${{ inputs.project_path }}"
-          if [ ! -d "$PROJ_DIR" ] && [ "$PROJ_DIR" != "." ]; then
-            echo "Searching for project root containing build files..."
+          if [ ! -d "$PROJ_DIR" ] || [ "$PROJ_DIR" = "." ]; then
             if [ -d "builds/${{ inputs.user_id }}/${{ inputs.job_id }}" ]; then
               PROJ_DIR="builds/${{ inputs.user_id }}/${{ inputs.job_id }}"
+            fi
+          fi
+
+          # Search for actual project root containing Gradle / Flutter / APK
+          if [ ! -f "$PROJ_DIR/build.gradle" ] && [ ! -f "$PROJ_DIR/build.gradle.kts" ] && [ ! -f "$PROJ_DIR/pubspec.yaml" ] && ! ls "$PROJ_DIR"/*.apk 1> /dev/null 2>&1; then
+            FOUND_DIR=$(find . -maxdepth 4 -type f \( -name "build.gradle" -o -name "build.gradle.kts" -o -name "pubspec.yaml" -o -name "*.apk" \) -not -path "*/.gradle/*" -not -path "*/.github/*" -exec dirname {} \; | head -n 1)
+            if [ -n "$FOUND_DIR" ] && [ -d "$FOUND_DIR" ]; then
+              PROJ_DIR="$FOUND_DIR"
             fi
           fi
           
