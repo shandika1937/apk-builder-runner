@@ -56,6 +56,15 @@ jobs:
             fi
           fi
 
+          # If project.zip or any zip is present in PROJ_DIR, unzip it automatically
+          if [ -f "$PROJ_DIR/project.zip" ]; then
+            echo "📦 Found project.zip archive in $PROJ_DIR, extracting..."
+            unzip -o -q "$PROJ_DIR/project.zip" -d "$PROJ_DIR"
+          elif [ -f "project.zip" ]; then
+            echo "📦 Found root project.zip archive, extracting..."
+            unzip -o -q "project.zip" -d "$PROJ_DIR"
+          fi
+
           # Search for actual project root containing Gradle / Flutter / APK
           if [ ! -f "$PROJ_DIR/build.gradle" ] && [ ! -f "$PROJ_DIR/build.gradle.kts" ] && [ ! -f "$PROJ_DIR/pubspec.yaml" ] && ! ls "$PROJ_DIR"/*.apk 1> /dev/null 2>&1; then
             FOUND_DIR=$(find . -maxdepth 4 -type f \( -name "build.gradle" -o -name "build.gradle.kts" -o -name "pubspec.yaml" -o -name "*.apk" \) -not -path "*/.gradle/*" -not -path "*/.github/*" -exec dirname {} \; | head -n 1)
@@ -69,16 +78,16 @@ jobs:
           # Detect framework
           if [ -f "$PROJ_DIR/pubspec.yaml" ] || [ -f "$PROJ_DIR/pubspec.yml" ]; then
             echo "type=flutter" >> $GITHUB_OUTPUT
-            echo "Framework: Flutter Project detected"
+            echo "Framework: Flutter Project detected at $PROJ_DIR"
           elif [ -f "$PROJ_DIR/build.gradle" ] || [ -f "$PROJ_DIR/build.gradle.kts" ] || [ -f "$PROJ_DIR/settings.gradle" ] || [ -f "$PROJ_DIR/settings.gradle.kts" ]; then
             echo "type=android" >> $GITHUB_OUTPUT
-            echo "Framework: Android Gradle Project detected"
+            echo "Framework: Android Gradle Project detected at $PROJ_DIR"
           elif ls "$PROJ_DIR"/*.apk 1> /dev/null 2>&1; then
             echo "type=apk_base" >> $GITHUB_OUTPUT
-            echo "Framework: Base APK file detected"
+            echo "Framework: Base APK file detected at $PROJ_DIR"
           else
             echo "type=android" >> $GITHUB_OUTPUT
-            echo "Framework: Default to Android Gradle"
+            echo "Framework: Default to Android Gradle at $PROJ_DIR"
           fi
 
       # ----------------------------------------------------
