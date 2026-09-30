@@ -1,29 +1,19 @@
 name: Build APK
-on: [push, pull_request]
+on: [push]
 jobs:
   build:
     runs-on: ubuntu-latest
     steps:
-      - name: Checkout Code
-        uses: actions/checkout@v4
-      - name: Setup Java JDK 17
+      - uses: actions/checkout@v4.2.2
+      - name: Setup Java JDK
         uses: actions/setup-java@v4
         with:
           java-version: '17'
           distribution: 'temurin'
-      - name: Setup Flutter
-        uses: subosito/flutter-action@v2
-        with:
-          flutter-version: '3.24.0'
-      - name: Build APK
-        run: |
-          flutter pub get
-          flutter build apk --release
+      - name: Build with Gradle
+        run: ./gradlew assembleDebug
       - name: Upload APK
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v4.4.0
         with:
-          name: release-apk
-          path: build/app/outputs/flutter-apk/app-release.apk
-      - name: Cleanup
-        if: always()
-        run: adb kill-server || true
+          name: app-debug
+          path: app/build/outputs/apk/debug/app-debug.apk
