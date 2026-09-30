@@ -108,7 +108,7 @@ jobs:
         if: steps.detect.outputs.type == 'flutter'
         uses: subosito/flutter-action@v2
         with:
-          flutter-version: "3.47.5"
+          channel: "stable"
           cache: false
 
       - name: 🔨 Build Flutter APK
@@ -117,6 +117,29 @@ jobs:
         run: |
           echo "=== Building Flutter APK ==="
           git config --global --add safe.directory "*" || true
+
+          echo "=== Applying AGP & Flutter Compatibility Fixes ==="
+          # Fix AGP 9+ DSL incompatibility ('android.newDsl' error)
+          mkdir -p ~/.gradle
+          touch ~/.gradle/gradle.properties
+          grep -q "android.newDsl" ~/.gradle/gradle.properties && sed -i 's/android.newDsl=true/android.newDsl=false/g' ~/.gradle/gradle.properties || echo "android.newDsl=false" >> ~/.gradle/gradle.properties
+          grep -q "android.builtInKotlin" ~/.gradle/gradle.properties && sed -i 's/android.builtInKotlin=true/android.builtInKotlin=false/g' ~/.gradle/gradle.properties || echo "android.builtInKotlin=false" >> ~/.gradle/gradle.properties
+          grep -q "org.gradle.jvmargs" ~/.gradle/gradle.properties || echo "org.gradle.jvmargs=-Xmx3072m -XX:MaxMetaspaceSize=1024m" >> ~/.gradle/gradle.properties
+
+          # Patch all project gradle.properties
+          find . -name "gradle.properties" | while read -r pFile; do
+            echo "Patching $pFile for android.newDsl compatibility"
+            grep -q "android.newDsl" "$pFile" && sed -i 's/android.newDsl=true/android.newDsl=false/g' "$pFile" || echo "android.newDsl=false" >> "$pFile"
+            grep -q "android.builtInKotlin" "$pFile" && sed -i 's/android.builtInKotlin=true/android.builtInKotlin=false/g' "$pFile" || echo "android.builtInKotlin=false" >> "$pFile"
+          done
+
+          # Ensure android/gradle.properties exists and is patched
+          if [ -d "android" ]; then
+            touch android/gradle.properties
+            grep -q "android.newDsl" android/gradle.properties && sed -i 's/android.newDsl=true/android.newDsl=false/g' android/gradle.properties || echo "android.newDsl=false" >> android/gradle.properties
+            grep -q "android.builtInKotlin" android/gradle.properties && sed -i 's/android.builtInKotlin=true/android.builtInKotlin=false/g' android/gradle.properties || echo "android.builtInKotlin=false" >> android/gradle.properties
+          fi
+
           flutter doctor -v
           flutter pub get
           if [ "${{ inputs.variant }}" = "release" ]; then
@@ -130,6 +153,16 @@ jobs:
         working-directory: ${{ steps.detect.outputs.proj_dir }}
         run: |
           echo "=== Building Android Gradle APK ==="
+          mkdir -p ~/.gradle
+          touch ~/.gradle/gradle.properties
+          grep -q "android.newDsl" ~/.gradle/gradle.properties && sed -i 's/android.newDsl=true/android.newDsl=false/g' ~/.gradle/gradle.properties || echo "android.newDsl=false" >> ~/.gradle/gradle.properties
+          grep -q "android.builtInKotlin" ~/.gradle/gradle.properties && sed -i 's/android.builtInKotlin=true/android.builtInKotlin=false/g' ~/.gradle/gradle.properties || echo "android.builtInKotlin=false" >> ~/.gradle/gradle.properties
+
+          find . -name "gradle.properties" | while read -r pFile; do
+            grep -q "android.newDsl" "$pFile" && sed -i 's/android.newDsl=true/android.newDsl=false/g' "$pFile" || echo "android.newDsl=false" >> "$pFile"
+            grep -q "android.builtInKotlin" "$pFile" && sed -i 's/android.builtInKotlin=true/android.builtInKotlin=false/g' "$pFile" || echo "android.builtInKotlin=false" >> "$pFile"
+          done
+
           if [ -f "./gradlew" ]; then
             sed -i "s/\r$//" ./gradlew
             chmod +x ./gradlew
@@ -154,35 +187,97 @@ jobs:
             APK_IN=$(find "$GITHUB_WORKSPACE" -name "*.apk" -not -path "*/dist-apk/*" | head -n 1)
           fi
           echo "Found Base APK: $APK_IN"
+
+          BUILD_TOOLS_DIR=$(find /usr/local/lib/android/sdk/build-tools -mindepth 1 -maxdepth 1 | sort -V | tail -n 1)
+          echo "Using Android Build Tools: $BUILD_TOOLS_DIR"
+
           if [ ! -f "debug.keystore" ]; then
             keytool -genkeypair -v -keystore debug.keystore -storepass android -alias androiddebugkey -keypass android -keyalg RSA -keysize 2048 -validity 10000 -dname "CN=Android Debug,O=Android,C=US"
           fi
-          jarsigner -verbose -sigalg SHA256withRSA -digestalg SHA-256 -keystore debug.keystore -storepass android -keypass android "$APK_IN" androiddebugkey || true
-          mkdir -p "$GITHUB_WORKSPACE/dist-apk"
-          cp "$APK_IN" "$GITHUB_WORKSPACE/dist-apk/app-${{ inputs.variant }}-${{ inputs.job_id }}.apk"
 
-      - name: 📦 Locate Output APK
+          mkdir -p "$GITHUB_WORKSPACE/dist-apk"
+          OUT_APK="$GITHUB_WORKSPACE/dist-apk/app-${{ inputs.variant }}-${{ inputs.job_id }}.apk"
+
+          if [ -x "$BUILD_TOOLS_DIR/zipalign" ]; then
+            echo "Applying zipalign..."
+            "$BUILD_TOOLS_DIR/zipalign" -p -f 4 "$APK_IN" "$OUT_APK"
+          else
+            cp "$APK_IN" "$OUT_APK"
+          fi
+
+          if [ -x "$BUILD_TOOLS_DIR/apksigner" ]; then
+            echo "Signing with apksigner (v1, v2, v3)..."
+            "$BUILD_TOOLS_DIR/apksigner" sign \
+              --ks debug.keystore \
+              --ks-pass pass:android \
+              --key-pass pass:android \
+              --ks-key-alias androiddebugkey \
+              --v1-signing-enabled true \
+              --v2-signing-enabled true \
+              --v3-signing-enabled true \
+              --v4-signing-enabled false \
+              "$OUT_APK"
+            "$BUILD_TOOLS_DIR/apksigner" verify --verbose "$OUT_APK" || true
+          else
+            jarsigner -verbose -sigalg SHA256withRSA -digestalg SHA-256 -keystore debug.keystore -storepass android -keypass android "$OUT_APK" androiddebugkey || true
+          fi
+
+      - name: 📦 Locate, Align & Sign Output APK
         id: collect
         run: |
           mkdir -p dist-apk
           DEST_NAME="app-${{ inputs.variant }}-${{ inputs.job_id }}.apk"
-          if [ ! -f "dist-apk/$DEST_NAME" ]; then
+          TARGET_APK="dist-apk/$DEST_NAME"
+
+          if [ ! -f "$TARGET_APK" ]; then
             APK_FILES=$(find . -name "*.apk" -not -path "*/dist-apk/*" -not -path "*/.gradle/*" -not -path "*/builds/*input*" | sort -n)
             PRIMARY_APK=$(echo "$APK_FILES" | head -n 1)
             if [ -n "$PRIMARY_APK" ] && [ -f "$PRIMARY_APK" ]; then
-              cp "$PRIMARY_APK" "dist-apk/$DEST_NAME"
+              cp "$PRIMARY_APK" "$TARGET_APK"
             fi
           fi
-          if [ ! -f "dist-apk/$DEST_NAME" ]; then
+
+          if [ ! -f "$TARGET_APK" ]; then
             echo "ERROR: No APK file was generated."
             exit 1
           fi
-          APK_SIZE=$(stat -c%s "dist-apk/$DEST_NAME" 2>/dev/null || stat -f%z "dist-apk/$DEST_NAME" 2>/dev/null || echo 0)
+
+          BUILD_TOOLS_DIR=$(find /usr/local/lib/android/sdk/build-tools -mindepth 1 -maxdepth 1 | sort -V | tail -n 1)
+          echo "Verifying / Signing Final APK with Android Build Tools: $BUILD_TOOLS_DIR"
+
+          if [ ! -f "debug.keystore" ]; then
+            keytool -genkeypair -v -keystore debug.keystore -storepass android -alias androiddebugkey -keypass android -keyalg RSA -keysize 2048 -validity 10000 -dname "CN=Android Debug,O=Android,C=US" || true
+          fi
+
+          # Always ensure 4-byte zipalign
+          if [ -x "$BUILD_TOOLS_DIR/zipalign" ]; then
+            echo "Running zipalign verification & alignment..."
+            "$BUILD_TOOLS_DIR/zipalign" -p -f 4 "$TARGET_APK" "dist-apk/aligned_$DEST_NAME" && mv "dist-apk/aligned_$DEST_NAME" "$TARGET_APK" || true
+          fi
+
+          # Always ensure apksigner v1, v2, v3
+          if [ -x "$BUILD_TOOLS_DIR/apksigner" ]; then
+            echo "Running apksigner sign (v1, v2, v3)..."
+            "$BUILD_TOOLS_DIR/apksigner" sign \
+              --ks debug.keystore \
+              --ks-pass pass:android \
+              --key-pass pass:android \
+              --ks-key-alias androiddebugkey \
+              --v1-signing-enabled true \
+              --v2-signing-enabled true \
+              --v3-signing-enabled true \
+              --v4-signing-enabled false \
+              "$TARGET_APK" || true
+            echo "Final APK Signature Verification:"
+            "$BUILD_TOOLS_DIR/apksigner" verify --verbose "$TARGET_APK" || true
+          fi
+
+          APK_SIZE=$(stat -c%s "$TARGET_APK" 2>/dev/null || stat -f%z "$TARGET_APK" 2>/dev/null || echo 0)
           if [ "$APK_SIZE" -le 0 ]; then
             echo "ERROR: Generated APK is empty (0 bytes)."
             exit 1
           fi
-          echo "apk_path=dist-apk/$DEST_NAME" >> $GITHUB_OUTPUT
+          echo "apk_path=$TARGET_APK" >> $GITHUB_OUTPUT
           echo "apk_name=$DEST_NAME" >> $GITHUB_OUTPUT
           echo "apk_size=$APK_SIZE" >> $GITHUB_OUTPUT
 
