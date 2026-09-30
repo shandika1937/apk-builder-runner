@@ -31,6 +31,16 @@ on:
         required: false
         type: string
         default: "debug"
+      enable_profile:
+        description: "Enable Gradle --profile logging"
+        required: false
+        type: string
+        default: "false"
+      enable_scan:
+        description: "Enable Gradle --scan build scan"
+        required: false
+        type: string
+        default: "false"
 
 jobs:
   build:
@@ -254,7 +264,16 @@ jobs:
           if [ "${{ inputs.variant }}" = "release" ]; then
             TASK="assembleRelease"
           fi
-          $GRADLE_CMD $TASK --stacktrace --no-daemon
+          EXTRA_GRADLE_FLAGS=""
+          if [ "${{ inputs.enable_profile }}" = "true" ]; then
+            echo "Enabling Gradle --profile..."
+            EXTRA_GRADLE_FLAGS="$EXTRA_GRADLE_FLAGS --profile"
+          fi
+          if [ "${{ inputs.enable_scan }}" = "true" ]; then
+            echo "Enabling Gradle --scan..."
+            EXTRA_GRADLE_FLAGS="$EXTRA_GRADLE_FLAGS --scan"
+          fi
+          $GRADLE_CMD $TASK --stacktrace --no-daemon $EXTRA_GRADLE_FLAGS
 
       - name: 📦 Process & Sign Base APK
         if: steps.detect.outputs.type == 'apk_base'
