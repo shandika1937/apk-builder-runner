@@ -4,14 +4,14 @@ jobs:
   build:
     runs-on: ubuntu-latest
     steps:
-      - name: Checkout Code
+      - name: Checkout Repository
         uses: actions/checkout@v4
-      - name: Setup Java
+      - name: Setup Java JDK
         uses: actions/setup-java@v4
         with:
-          distribution: 'temurin'
           java-version: '17'
+          distribution: 'temurin'
       - name: Setup Android SDK
-        uses: android-actions/setup-android@v4
+        uses: android-actions/setup-android@v3
       - name: Build with Gradle
-        run: ./gradlew build
+        run: ./gradlew assembleRelease
