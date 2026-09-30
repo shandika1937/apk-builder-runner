@@ -4,33 +4,33 @@ on:
   workflow_dispatch:
     inputs:
       job_id:
-        description: "Build Job ID"
+        description: 'Build Job ID'
         required: true
         type: string
       user_id:
-        description: "Telegram User ID"
+        description: 'Telegram User ID'
         required: true
         type: string
       branch_name:
-        description: "Target Job Branch"
+        description: 'Target Job Branch'
         required: false
         type: string
-        default: "main"
+        default: 'main'
       project_path:
-        description: "Path to Project Root directory"
+        description: 'Path to Project Root directory'
         required: false
         type: string
-        default: "."
+        default: '.'
       project_type:
-        description: "Project type (android | flutter | apk_base | auto)"
+        description: 'Project type (android | flutter | apk_base | auto)'
         required: false
         type: string
-        default: "auto"
+        default: 'auto'
       variant:
-        description: "Build Variant (debug | release)"
+        description: 'Build Variant (debug | release)'
         required: false
         type: string
-        default: "debug"
+        default: 'debug'
 
 jobs:
   build:
@@ -58,16 +58,19 @@ jobs:
             fi
           fi
 
+          # If project.zip or any zip is present in PROJ_DIR, unzip it automatically
           if [ -f "$PROJ_DIR/project.zip" ]; then
-            echo "📦 Extracting $PROJ_DIR/project.zip..."
+            echo "📦 Found project.zip archive in $PROJ_DIR, extracting..."
             unzip -o -q "$PROJ_DIR/project.zip" -d "$PROJ_DIR"
           elif [ -f "project.zip" ]; then
-            echo "📦 Extracting root project.zip..."
+            echo "📦 Found root project.zip archive, extracting..."
             unzip -o -q "project.zip" -d "$PROJ_DIR"
           fi
 
+          # Extract any other nested zip files (e.g. from panel/base tools)
           find "$PROJ_DIR" -maxdepth 2 -name "*.zip" -not -name "project.zip" -exec unzip -o -q {} -d "$PROJ_DIR" \; 2>/dev/null || true
 
+          # Find markers recursively
           PUBSPEC_FOUND=$(find "$PROJ_DIR" -maxdepth 5 -name "pubspec.yaml" -not -path "*/.gradle/*" | head -n 1)
           GRADLE_FOUND=$(find "$PROJ_DIR" -maxdepth 5 \( -name "build.gradle" -o -name "build.gradle.kts" -o -name "settings.gradle" \) -not -path "*/.gradle/*" | head -n 1)
           APK_FOUND=$(find "$PROJ_DIR" -maxdepth 5 -name "*.apk" -not -path "*/dist-apk/*" -not -path "*/build/*" | head -n 1)
@@ -75,26 +78,30 @@ jobs:
           if [ -n "$PUBSPEC_FOUND" ]; then
             echo "type=flutter" >> $GITHUB_OUTPUT
             PROJ_DIR=$(dirname "$PUBSPEC_FOUND")
-            echo "Framework: Flutter Project at $PROJ_DIR"
+            echo "Framework: Flutter Project detected at $PROJ_DIR"
           elif [ -n "$GRADLE_FOUND" ]; then
             echo "type=android" >> $GITHUB_OUTPUT
             PROJ_DIR=$(dirname "$GRADLE_FOUND")
-            echo "Framework: Android Gradle Project at $PROJ_DIR"
+            echo "Framework: Android Gradle Project detected at $PROJ_DIR"
           elif [ -n "$APK_FOUND" ]; then
             echo "type=apk_base" >> $GITHUB_OUTPUT
             PROJ_DIR=$(dirname "$APK_FOUND")
-            echo "Framework: Base APK at $PROJ_DIR"
+            echo "Framework: Base APK file detected at $PROJ_DIR ($APK_FOUND)"
           else
             echo "type=android" >> $GITHUB_OUTPUT
-            echo "Framework: Default Android Gradle at $PROJ_DIR"
+            echo "Framework: Default to Android Gradle at $PROJ_DIR"
           fi
+
           echo "proj_dir=$PROJ_DIR" >> $GITHUB_OUTPUT
 
+      # ----------------------------------------------------
+      # SETUP JAVA & GRADLE (For Android / Flutter / Base APK)
+      # ----------------------------------------------------
       - name: ☕ Setup Java JDK 17
         uses: actions/setup-java@v4
         with:
-          distribution: "temurin"
-          java-version: "17"
+          distribution: 'temurin'
+          java-version: '17'
 
       - name: 🐘 Setup Gradle
         uses: gradle/actions/setup-gradle@v4
@@ -102,21 +109,27 @@ jobs:
 
       - name: 📱 Accept Android SDK Licenses
         run: |
-          yes | /usr/local/lib/android/sdk/cmdline-tools/latest/bin/sdkmanager --licenses 2>/dev/null || true
+          yes | sdkmanager --licenses || true
 
+      # ----------------------------------------------------
+      # SETUP FLUTTER (If Flutter project detected)
+      # ----------------------------------------------------
       - name: 🐦 Setup Flutter SDK
         if: steps.detect.outputs.type == 'flutter'
         uses: subosito/flutter-action@v2
         with:
-          flutter-version: "3.24.x"
-          channel: "stable"
+          flutter-version: '3.24.x'
+          channel: 'stable'
           cache: true
 
+      # ----------------------------------------------------
+      # FLUTTER BUILD PIPELINE
+      # ----------------------------------------------------
       - name: 🔨 Build Flutter APK
         if: steps.detect.outputs.type == 'flutter'
         working-directory: ${{ steps.detect.outputs.proj_dir }}
         run: |
-          echo "=== Building Flutter APK ==="
+          echo "=== Starting Flutter Build ==="
           flutter pub get
           if [ "${{ inputs.variant }}" = "release" ]; then
             flutter build apk --release --no-tree-shake-icons || flutter build apk --release
@@ -124,25 +137,34 @@ jobs:
             flutter build apk --debug --no-tree-shake-icons || flutter build apk --debug
           fi
 
+      # ----------------------------------------------------
+      # ANDROID GRADLE BUILD PIPELINE
+      # ----------------------------------------------------
       - name: 🔨 Build Android Gradle APK
         if: steps.detect.outputs.type == 'android'
         working-directory: ${{ steps.detect.outputs.proj_dir }}
         run: |
-          echo "=== Building Android Gradle APK ==="
+          echo "=== Starting Android Gradle Build ==="
           if [ -f "./gradlew" ]; then
-            sed -i "s/\r$//" ./gradlew
+            sed -i 's/\r$//' ./gradlew
             chmod +x ./gradlew
             GRADLE_CMD="./gradlew"
           else
-            echo "Using system gradle"
+            echo "gradlew wrapper not found, using system gradle"
             GRADLE_CMD="gradle"
           fi
+
           TASK="assembleDebug"
           if [ "${{ inputs.variant }}" = "release" ]; then
             TASK="assembleRelease"
           fi
+
+          echo "Executing: $GRADLE_CMD $TASK --stacktrace --no-daemon"
           $GRADLE_CMD $TASK --stacktrace --no-daemon
 
+      # ----------------------------------------------------
+      # APK BASE PROCESSING & SIGNING PIPELINE
+      # ----------------------------------------------------
       - name: 📦 Process & Sign Base APK
         if: steps.detect.outputs.type == 'apk_base'
         working-directory: ${{ steps.detect.outputs.proj_dir }}
@@ -153,38 +175,58 @@ jobs:
             APK_IN=$(find "$GITHUB_WORKSPACE" -name "*.apk" -not -path "*/dist-apk/*" | head -n 1)
           fi
           echo "Found Base APK: $APK_IN"
+
+          # Generate debug keystore if missing
           if [ ! -f "debug.keystore" ]; then
             keytool -genkeypair -v -keystore debug.keystore -storepass android -alias androiddebugkey -keypass android -keyalg RSA -keysize 2048 -validity 10000 -dname "CN=Android Debug,O=Android,C=US"
           fi
+
+          # Sign using jarsigner
           jarsigner -verbose -sigalg SHA256withRSA -digestalg SHA-256 -keystore debug.keystore -storepass android -keypass android "$APK_IN" androiddebugkey || true
           mkdir -p "$GITHUB_WORKSPACE/dist-apk"
           cp "$APK_IN" "$GITHUB_WORKSPACE/dist-apk/app-${{ inputs.variant }}-${{ inputs.job_id }}.apk"
 
+      # ----------------------------------------------------
+      # LOCATE AND COLLECT OUTPUT APK
+      # ----------------------------------------------------
       - name: 📦 Locate Output APK
         id: collect
         run: |
           mkdir -p dist-apk
+
           DEST_NAME="app-${{ inputs.variant }}-${{ inputs.job_id }}.apk"
+          
           if [ ! -f "dist-apk/$DEST_NAME" ]; then
+            # Search for any generated APK files
             APK_FILES=$(find . -name "*.apk" -not -path "*/dist-apk/*" -not -path "*/.gradle/*" -not -path "*/builds/*input*" | sort -n)
+            echo "Discovered APK files:"
+            echo "$APK_FILES"
             PRIMARY_APK=$(echo "$APK_FILES" | head -n 1)
             if [ -n "$PRIMARY_APK" ] && [ -f "$PRIMARY_APK" ]; then
               cp "$PRIMARY_APK" "dist-apk/$DEST_NAME"
+              echo "✅ Copied $PRIMARY_APK to dist-apk/$DEST_NAME"
             fi
           fi
+
           if [ ! -f "dist-apk/$DEST_NAME" ]; then
-            echo "ERROR: No APK file was generated."
+            echo "❌ ERROR: No APK file was generated by the build process."
             exit 1
           fi
+
           APK_SIZE=$(stat -c%s "dist-apk/$DEST_NAME" 2>/dev/null || stat -f%z "dist-apk/$DEST_NAME" 2>/dev/null || echo 0)
+
           if [ "$APK_SIZE" -le 0 ]; then
-            echo "ERROR: Generated APK is empty (0 bytes)."
+            echo "❌ ERROR: Generated APK is empty (0 bytes)."
             exit 1
           fi
+
           echo "apk_path=dist-apk/$DEST_NAME" >> $GITHUB_OUTPUT
           echo "apk_name=$DEST_NAME" >> $GITHUB_OUTPUT
           echo "apk_size=$APK_SIZE" >> $GITHUB_OUTPUT
 
+      # ----------------------------------------------------
+      # UPLOAD APK ARTIFACT TO GITHUB
+      # ----------------------------------------------------
       - name: 🚀 Upload APK Artifact
         uses: actions/upload-artifact@v4
         with:
