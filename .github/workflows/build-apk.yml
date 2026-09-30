@@ -203,6 +203,16 @@ jobs:
           echo "Running flutter pub get..."
           flutter pub get -v
 
+          echo "Applying Flutter final class IconData compatibility fix..."
+          if [ -n "$FLUTTER_ROOT" ] && [ -f "$FLUTTER_ROOT/packages/flutter/lib/src/widgets/icon_data.dart" ]; then
+            sed -i 's/final class IconData/class IconData/g' "$FLUTTER_ROOT/packages/flutter/lib/src/widgets/icon_data.dart" || true
+            sed -i 's/base class IconData/class IconData/g' "$FLUTTER_ROOT/packages/flutter/lib/src/widgets/icon_data.dart" || true
+          fi
+          find /home/runner/.pub-cache -name "icon_data.dart" 2>/dev/null | while read -r f; do
+            sed -i 's/final class IconData/class IconData/g' "$f" 2>/dev/null || true
+            sed -i 's/base class IconData/class IconData/g' "$f" 2>/dev/null || true
+          done
+
           echo "Running flutter analyze suggestions..."
           flutter analyze --suggestions || true
 
@@ -210,6 +220,7 @@ jobs:
           BUILD_FLAGS="--no-tree-shake-icons --android-skip-build-dependency-validation -v"
           mkdir -p "$GITHUB_WORKSPACE/dist-logs"
 
+          set -o pipefail
           if [ "${{ inputs.variant }}" = "release" ]; then
             flutter build apk --release $BUILD_FLAGS 2>&1 | tee "$GITHUB_WORKSPACE/dist-logs/build_flutter.log"
           else
@@ -299,11 +310,11 @@ jobs:
 
           # Requirement #10: Search for output APKs in Flutter, Gradle, and dist locations
           PRIMARY_APK=""
-          FLUTTER_APK=$(find build/app/outputs/flutter-apk build/app/outputs/apk app/build/outputs/apk -name "*.apk" 2>/dev/null | head -n 1)
+          FLUTTER_APK=$(find "${{ steps.detect.outputs.proj_dir }}/build/app/outputs/flutter-apk" build/app/outputs/flutter-apk "${{ steps.detect.outputs.proj_dir }}/build/app/outputs/apk" build/app/outputs/apk app/build/outputs/apk -name "*.apk" 2>/dev/null | head -n 1)
           if [ -n "$FLUTTER_APK" ] && [ -f "$FLUTTER_APK" ]; then
             PRIMARY_APK="$FLUTTER_APK"
           else
-            APK_FILES=$(find . -name "*.apk" -not -path "*/dist-apk/*" -not -path "*/.gradle/*" -not -path "*/builds/*input*" | sort -n)
+            APK_FILES=$(find . -name "*.apk" -not -path "*/dist-apk/*" -not -path "*/.gradle/*" -not -path "*/builds/*input*" 2>/dev/null | sort -n)
             PRIMARY_APK=$(echo "$APK_FILES" | head -n 1)
           fi
 
