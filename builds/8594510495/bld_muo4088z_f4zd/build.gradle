@@ -1,0 +1,1 @@
+buildscript { repositories { google(); mavenCentral() } dependencies { classpath 'com.android.tools.build:gradle:8.2.0' } } apply plugin: 'com.android.application' android { compileSdk 34 defaultConfig { applicationId 'com.example.apkbuilder' minSdk 21 targetSdk 34 versionCode 1 versionName '1.0' } }
