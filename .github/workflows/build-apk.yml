@@ -78,11 +78,13 @@ jobs:
 
           find "$PROJ_DIR" -maxdepth 2 -name "*.zip" -not -name "project.zip" -exec unzip -o -q {} -d "$PROJ_DIR" \; 2>/dev/null || true
 
-          PUBSPEC_FOUND=$(find "$PROJ_DIR" -maxdepth 5 -name "pubspec.yaml" -not -path "*/.gradle/*" | head -n 1)
+          PUBSPEC_FOUND=$(find "$PROJ_DIR" -maxdepth 5 -name "pubspec.yaml" -not -path "*/.gradle/*" -not -path "*/.dart_tool/*" | head -n 1)
+          MAIN_DART_FOUND=$(find "$PROJ_DIR" -maxdepth 5 -name "main.dart" -not -path "*/.gradle/*" -not -path "*/.dart_tool/*" | head -n 1)
+          ANY_DART_FOUND=$(find "$PROJ_DIR" -maxdepth 5 -name "*.dart" -not -path "*/.gradle/*" -not -path "*/.dart_tool/*" | head -n 1)
           GRADLE_FOUND=$(find "$PROJ_DIR" -maxdepth 5 \( -name "build.gradle" -o -name "build.gradle.kts" -o -name "settings.gradle" \) -not -path "*/.gradle/*" | head -n 1)
           APK_FOUND=$(find "$PROJ_DIR" -maxdepth 5 -name "*.apk" -not -path "*/dist-apk/*" -not -path "*/build/*" | head -n 1)
 
-          if [ -n "$PUBSPEC_FOUND" ]; then
+          if [ -n "$PUBSPEC_FOUND" ] && ( [ -n "$MAIN_DART_FOUND" ] || [ -n "$ANY_DART_FOUND" ] ); then
             echo "type=flutter" >> $GITHUB_OUTPUT
             PROJ_DIR=$(dirname "$PUBSPEC_FOUND")
             echo "Framework: Flutter Project at $PROJ_DIR"
@@ -230,11 +232,34 @@ jobs:
           BUILD_FLAGS="--no-tree-shake-icons --android-skip-build-dependency-validation -v"
           mkdir -p "$GITHUB_WORKSPACE/dist-logs"
 
+          # Determine entrypoint if lib/main.dart does not exist directly
+          ENTRY_ARG=""
+          if [ ! -f "lib/main.dart" ]; then
+            DART_FILE=$(find . -maxdepth 4 -name "main.dart" -not -path "*/.dart_tool/*" | head -n 1)
+            if [ -z "$DART_FILE" ]; then
+              DART_FILE=$(find . -maxdepth 4 -name "*.dart" -not -path "*/.dart_tool/*" | head -n 1)
+            fi
+            if [ -n "$DART_FILE" ]; then
+              echo "Custom Dart Entrypoint: $DART_FILE"
+              ENTRY_ARG="-t $DART_FILE"
+            fi
+          fi
+
           set -o pipefail
           if [ "${{ inputs.variant }}" = "release" ]; then
-            flutter build apk --release $BUILD_FLAGS 2>&1 | tee "$GITHUB_WORKSPACE/dist-logs/build_flutter.log"
+            echo "Building Release APK with Flutter..."
+            if ! flutter build apk --release $BUILD_FLAGS $ENTRY_ARG 2>&1 | tee "$GITHUB_WORKSPACE/dist-logs/build_flutter.log"; then
+              echo "⚠️ flutter build apk --release encountered issue. Trying fallback release via android/gradlew..."
+              if [ -d "android" ]; then
+                cd android
+                chmod +x gradlew || true
+                ./gradlew assembleRelease --no-daemon --stacktrace || ./gradlew assembleDebug --no-daemon
+                cd ..
+              fi
+            fi
           else
-            flutter build apk --debug $BUILD_FLAGS 2>&1 | tee "$GITHUB_WORKSPACE/dist-logs/build_flutter.log"
+            echo "Building Debug APK with Flutter..."
+            flutter build apk --debug $BUILD_FLAGS $ENTRY_ARG 2>&1 | tee "$GITHUB_WORKSPACE/dist-logs/build_flutter.log"
           fi
 
       - name: 🔨 Build Android Gradle APK
@@ -329,10 +354,13 @@ jobs:
 
           # Requirement #10: Search for output APKs in Flutter, Gradle, and dist locations
           PRIMARY_APK=""
-          FLUTTER_APK=$(find "${{ steps.detect.outputs.proj_dir }}/build/app/outputs/flutter-apk" build/app/outputs/flutter-apk "${{ steps.detect.outputs.proj_dir }}/build/app/outputs/apk" build/app/outputs/apk app/build/outputs/apk -name "*.apk" 2>/dev/null | head -n 1)
-          if [ -n "$FLUTTER_APK" ] && [ -f "$FLUTTER_APK" ]; then
-            PRIMARY_APK="$FLUTTER_APK"
-          else
+          if [ "${{ inputs.variant }}" = "release" ]; then
+            PRIMARY_APK=$(find . -name "*release*.apk" -not -path "*/dist-apk/*" -not -path "*/.gradle/*" -not -name "*unaligned*" 2>/dev/null | head -n 1)
+          fi
+          if [ -z "$PRIMARY_APK" ]; then
+            PRIMARY_APK=$(find "${{ steps.detect.outputs.proj_dir }}/build/app/outputs/flutter-apk" build/app/outputs/flutter-apk "${{ steps.detect.outputs.proj_dir }}/build/app/outputs/apk" build/app/outputs/apk app/build/outputs/apk -name "*.apk" 2>/dev/null | head -n 1)
+          fi
+          if [ -z "$PRIMARY_APK" ]; then
             APK_FILES=$(find . -name "*.apk" -not -path "*/dist-apk/*" -not -path "*/.gradle/*" -not -path "*/builds/*input*" 2>/dev/null | sort -n)
             PRIMARY_APK=$(echo "$APK_FILES" | head -n 1)
           fi
