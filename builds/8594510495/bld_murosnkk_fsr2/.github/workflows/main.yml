@@ -1,26 +1,32 @@
-name: Android Build
-on: [push]
+name: Build APK
+
+on: [push, pull_request]
+
 jobs:
   build:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
-      - name: Setup Java
+      - name: Checkout Repository
+        uses: actions/checkout@v4
+      
+      - name: Setup Java JDK 17
         uses: actions/setup-java@v4
         with:
           java-version: '17'
           distribution: 'temurin'
-      - name: Setup Flutter
+
+      - name: Setup Flutter SDK
         uses: subosito/flutter-action@v2
         with:
-          flutter-version: 'stable'
+          flutter-version: '3.x'
+
       - name: Build APK
         run: |
           flutter pub get
           flutter build apk --release
-        shell: bash
+
       - name: Upload Artifact
         uses: actions/upload-artifact@v4
         with:
-          name: release-apk
+          name: build-logs
           path: build/app/outputs/flutter-apk/app-release.apk
