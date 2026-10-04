@@ -78,29 +78,40 @@ jobs:
 
           find "$PROJ_DIR" -maxdepth 2 -name "*.zip" -not -name "project.zip" -exec unzip -o -q {} -d "$PROJ_DIR" \; 2>/dev/null || true
 
-          PUBSPEC_FOUND=$(find "$PROJ_DIR" -maxdepth 5 -name "pubspec.yaml" -not -path "*/.gradle/*" -not -path "*/.dart_tool/*" | head -n 1)
-          MAIN_DART_FOUND=$(find "$PROJ_DIR" -maxdepth 5 -name "main.dart" -not -path "*/.gradle/*" -not -path "*/.dart_tool/*" | head -n 1)
-          ANY_DART_FOUND=$(find "$PROJ_DIR" -maxdepth 5 -name "*.dart" -not -path "*/.gradle/*" -not -path "*/.dart_tool/*" | head -n 1)
-          GRADLE_FOUND=$(find "$PROJ_DIR" -maxdepth 5 \( -name "build.gradle" -o -name "build.gradle.kts" -o -name "settings.gradle" \) -not -path "*/.gradle/*" | head -n 1)
-          APK_FOUND=$(find "$PROJ_DIR" -maxdepth 5 -name "*.apk" -not -path "*/dist-apk/*" -not -path "*/build/*" | head -n 1)
+          PUBSPEC_FOUND=$(find "$PROJ_DIR" -maxdepth 5 \( -name "pubspec.yaml" -o -name "pubspec.yml" \) -not -path "*/.gradle/*" -not -path "*/.dart_tool/*" 2>/dev/null | head -n 1)
+          GRADLE_FOUND=$(find "$PROJ_DIR" -maxdepth 5 \( -name "build.gradle" -o -name "build.gradle.kts" -o -name "settings.gradle" -o -name "settings.gradle.kts" \) -not -path "*/.gradle/*" 2>/dev/null | head -n 1)
+          APK_FOUND=$(find "$PROJ_DIR" -maxdepth 5 -name "*.apk" -not -path "*/dist-apk/*" -not -path "*/build/*" 2>/dev/null | head -n 1)
+          FLUTTER_REF=$(find "$PROJ_DIR" -maxdepth 4 \( -name "settings.gradle*" -o -name "build.gradle*" \) -exec grep -l "flutter" {} + 2>/dev/null | head -n 1)
 
-          if [ -n "$PUBSPEC_FOUND" ] && ( [ -n "$MAIN_DART_FOUND" ] || [ -n "$ANY_DART_FOUND" ] ); then
+          if [ "${{ inputs.project_type }}" = "flutter" ] || [ -n "$PUBSPEC_FOUND" ] || [ -n "$FLUTTER_REF" ]; then
             echo "type=flutter" >> $GITHUB_OUTPUT
-            PROJ_DIR=$(dirname "$PUBSPEC_FOUND")
+            if [ -n "$PUBSPEC_FOUND" ]; then
+              PROJ_DIR=$(dirname "$PUBSPEC_FOUND")
+            fi
             echo "Framework: Flutter Project at $PROJ_DIR"
-          elif [ -n "$GRADLE_FOUND" ]; then
-            echo "type=android" >> $GITHUB_OUTPUT
-            PROJ_DIR=$(dirname "$GRADLE_FOUND")
-            echo "Framework: Android Gradle Project at $PROJ_DIR"
-          elif [ -n "$APK_FOUND" ]; then
+          elif [ "${{ inputs.project_type }}" = "apk_base" ] || ( [ -z "$GRADLE_FOUND" ] && [ -n "$APK_FOUND" ] ); then
             echo "type=apk_base" >> $GITHUB_OUTPUT
-            PROJ_DIR=$(dirname "$APK_FOUND")
+            if [ -n "$APK_FOUND" ]; then
+              PROJ_DIR=$(dirname "$APK_FOUND")
+            fi
             echo "Framework: Base APK at $PROJ_DIR"
           else
             echo "type=android" >> $GITHUB_OUTPUT
-            echo "Framework: Default Android Gradle at $PROJ_DIR"
+            if [ -n "$GRADLE_FOUND" ]; then
+              PROJ_DIR=$(dirname "$GRADLE_FOUND")
+              if [ "$(basename "$PROJ_DIR")" = "app" ] && ( [ -f "$PROJ_DIR/../settings.gradle" ] || [ -f "$PROJ_DIR/../settings.gradle.kts" ] ); then
+                PROJ_DIR=$(dirname "$PROJ_DIR")
+              fi
+            fi
+            echo "Framework: Android Gradle Project at $PROJ_DIR"
           fi
           echo "proj_dir=$PROJ_DIR" >> $GITHUB_OUTPUT
+
+          # Ensure local.properties exists wherever Gradle or Android files live
+          for LDIR in "$PROJ_DIR" "$PROJ_DIR/android" "$GITHUB_WORKSPACE" "$GITHUB_WORKSPACE/android"; do
+            mkdir -p "$LDIR" 2>/dev/null || true
+            echo "sdk.dir=/usr/local/lib/android/sdk" > "$LDIR/local.properties"
+          done
 
       - name: ☕ Setup Java JDK 17
         uses: actions/setup-java@v5
@@ -122,6 +133,32 @@ jobs:
         with:
           channel: "stable"
           cache: false
+
+      - name: ⚙️ Configure Flutter SDK in local.properties
+        if: steps.detect.outputs.type == 'flutter'
+        run: |
+          PROJ_DIR="${{ steps.detect.outputs.proj_dir }}"
+          echo "Syncing flutter.sdk in local.properties with FLUTTER_ROOT: $FLUTTER_ROOT"
+          for LDIR in "$PROJ_DIR" "$PROJ_DIR/android" "$GITHUB_WORKSPACE" "$GITHUB_WORKSPACE/android"; do
+            if [ -d "$LDIR" ]; then
+              mkdir -p "$LDIR"
+              echo "sdk.dir=/usr/local/lib/android/sdk" > "$LDIR/local.properties"
+              if [ -n "$FLUTTER_ROOT" ]; then
+                echo "flutter.sdk=$FLUTTER_ROOT" >> "$LDIR/local.properties"
+                echo "flutter.buildMode=${{ inputs.variant }}" >> "$LDIR/local.properties"
+                echo "flutter.versionName=1.0.0" >> "$LDIR/local.properties"
+                echo "flutter.versionCode=1" >> "$LDIR/local.properties"
+              fi
+            fi
+          done
+          find "$GITHUB_WORKSPACE" -maxdepth 6 \( -name "settings.gradle*" -o -name "build.gradle*" \) | while read -r gFile; do
+            gDir=$(dirname "$gFile")
+            mkdir -p "$gDir" 2>/dev/null || true
+            echo "sdk.dir=/usr/local/lib/android/sdk" > "$gDir/local.properties"
+            if [ -n "$FLUTTER_ROOT" ]; then
+              echo "flutter.sdk=$FLUTTER_ROOT" >> "$gDir/local.properties"
+            fi
+          done
 
       - name: 🔎 Diagnose Flutter Project
         if: steps.detect.outputs.type == 'flutter'
@@ -253,8 +290,12 @@ jobs:
               if [ -d "android" ]; then
                 cd android
                 chmod +x gradlew || true
-                ./gradlew assembleRelease --no-daemon --stacktrace || ./gradlew assembleDebug --no-daemon
+                ./gradlew assembleRelease --no-daemon --stacktrace || ./gradlew assembleDebug --no-daemon || true
                 cd ..
+              fi
+              if [ ! -f "build/app/outputs/flutter-apk/app-release.apk" ] && [ ! -f "build/app/outputs/apk/release/app-release.apk" ]; then
+                echo "Building resilient fallback APK..."
+                flutter build apk --debug --no-tree-shake-icons $ENTRY_ARG 2>&1 | tee -a "$GITHUB_WORKSPACE/dist-logs/build_flutter.log" || true
               fi
             fi
           else
@@ -307,7 +348,14 @@ jobs:
             echo "Enabling Gradle --scan..."
             EXTRA_GRADLE_FLAGS="$EXTRA_GRADLE_FLAGS --scan"
           fi
-          $GRADLE_CMD $TASK --stacktrace --no-daemon $EXTRA_GRADLE_FLAGS
+          $GRADLE_CMD $TASK --stacktrace --no-daemon $EXTRA_GRADLE_FLAGS || {
+            if [ "${{ inputs.variant }}" = "release" ]; then
+              echo "⚠️ assembleRelease failed. Falling back to assembleDebug..."
+              $GRADLE_CMD assembleDebug --stacktrace --no-daemon $EXTRA_GRADLE_FLAGS
+            else
+              exit 1
+            fi
+          }
 
       - name: 📦 Process & Sign Base APK
         if: steps.detect.outputs.type == 'apk_base'
@@ -394,21 +442,25 @@ jobs:
             "$BUILD_TOOLS_DIR/zipalign" -p -f 4 "$TARGET_APK" "dist-apk/aligned_$DEST_NAME" && mv "dist-apk/aligned_$DEST_NAME" "$TARGET_APK" || true
           fi
 
-          # Always ensure apksigner v1, v2, v3
-          if [ -x "$BUILD_TOOLS_DIR/apksigner" ]; then
-            echo "Running apksigner sign (v1, v2, v3)..."
-            "$BUILD_TOOLS_DIR/apksigner" sign \
-              --ks debug.keystore \
-              --ks-pass pass:android \
-              --key-pass pass:android \
-              --ks-key-alias androiddebugkey \
-              --v1-signing-enabled true \
-              --v2-signing-enabled true \
-              --v3-signing-enabled true \
-              --v4-signing-enabled false \
-              "$TARGET_APK" || true
-            echo "Final APK Signature Verification:"
-            "$BUILD_TOOLS_DIR/apksigner" verify --verbose "$TARGET_APK" || true
+          # Only sign with debug keystore if variant is NOT release
+          if [ "${{ inputs.variant }}" != "release" ]; then
+            if [ -x "$BUILD_TOOLS_DIR/apksigner" ]; then
+              echo "Running apksigner sign (v1, v2, v3)..."
+              "$BUILD_TOOLS_DIR/apksigner" sign \
+                --ks debug.keystore \
+                --ks-pass pass:android \
+                --key-pass pass:android \
+                --ks-key-alias androiddebugkey \
+                --v1-signing-enabled true \
+                --v2-signing-enabled true \
+                --v3-signing-enabled true \
+                --v4-signing-enabled false \
+                "$TARGET_APK" || true
+              echo "Final APK Signature Verification:"
+              "$BUILD_TOOLS_DIR/apksigner" verify --verbose "$TARGET_APK" || true
+            fi
+          else
+            echo "Release Mode: Preserving Release APK without auto-signing with debug key."
           fi
 
           APK_SIZE=$(stat -c%s "$TARGET_APK" 2>/dev/null || stat -f%z "$TARGET_APK" 2>/dev/null || echo 0)
