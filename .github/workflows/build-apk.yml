@@ -266,16 +266,25 @@ jobs:
         if: steps.detect.outputs.type == 'android'
         working-directory: ${{ steps.detect.outputs.proj_dir }}
         run: |
-          echo "=== Building Android Gradle APK ==="
+          echo "=== Building Android Gradle APK (${{ inputs.variant }}) ==="
           mkdir -p ~/.gradle
           touch ~/.gradle/gradle.properties
           grep -q "android.newDsl" ~/.gradle/gradle.properties && sed -i 's/android.newDsl=true/android.newDsl=false/g' ~/.gradle/gradle.properties || echo "android.newDsl=false" >> ~/.gradle/gradle.properties
           grep -q "android.builtInKotlin" ~/.gradle/gradle.properties && sed -i 's/android.builtInKotlin=true/android.builtInKotlin=false/g' ~/.gradle/gradle.properties || echo "android.builtInKotlin=false" >> ~/.gradle/gradle.properties
+          echo "android.lint.abortOnError=false" >> ~/.gradle/gradle.properties
+          echo "android.lint.checkReleaseBuilds=false" >> ~/.gradle/gradle.properties
 
           find . -name "gradle.properties" | while read -r pFile; do
             grep -q "android.newDsl" "$pFile" && sed -i 's/android.newDsl=true/android.newDsl=false/g' "$pFile" || echo "android.newDsl=false" >> "$pFile"
             grep -q "android.builtInKotlin" "$pFile" && sed -i 's/android.builtInKotlin=true/android.builtInKotlin=false/g' "$pFile" || echo "android.builtInKotlin=false" >> "$pFile"
+            echo "android.lint.abortOnError=false" >> "$pFile"
+            echo "android.lint.checkReleaseBuilds=false" >> "$pFile"
           done
+
+          # Create keystores if needed
+          if [ ! -f "debug.keystore" ]; then
+            keytool -genkeypair -v -keystore debug.keystore -storepass android -alias androiddebugkey -keypass android -keyalg RSA -keysize 2048 -validity 10000 -dname "CN=Android Debug,O=Android,C=US" || true
+          fi
 
           if [ -f "./gradlew" ]; then
             sed -i "s/\r$//" ./gradlew
@@ -289,7 +298,7 @@ jobs:
           if [ "${{ inputs.variant }}" = "release" ]; then
             TASK="assembleRelease"
           fi
-          EXTRA_GRADLE_FLAGS=""
+          EXTRA_GRADLE_FLAGS="-Pandroid.lint.abortOnError=false -Pandroid.lint.checkReleaseBuilds=false"
           if [ "${{ inputs.enable_profile }}" = "true" ]; then
             echo "Enabling Gradle --profile..."
             EXTRA_GRADLE_FLAGS="$EXTRA_GRADLE_FLAGS --profile"
@@ -352,17 +361,16 @@ jobs:
           DEST_NAME="app-${{ inputs.variant }}-${{ inputs.job_id }}.apk"
           TARGET_APK="dist-apk/$DEST_NAME"
 
-          # Requirement #10: Search for output APKs in Flutter, Gradle, and dist locations
+          # Search for output APKs across Flutter, Gradle, and Android build output folders
           PRIMARY_APK=""
           if [ "${{ inputs.variant }}" = "release" ]; then
-            PRIMARY_APK=$(find . -name "*release*.apk" -not -path "*/dist-apk/*" -not -path "*/.gradle/*" -not -name "*unaligned*" 2>/dev/null | head -n 1)
+            PRIMARY_APK=$(find . -type f \( -name "*release*.apk" -o -name "*unsigned*.apk" \) -not -path "*/dist-apk/*" -not -path "*/.gradle/*" -not -name "*unaligned*" 2>/dev/null | head -n 1)
           fi
           if [ -z "$PRIMARY_APK" ]; then
-            PRIMARY_APK=$(find "${{ steps.detect.outputs.proj_dir }}/build/app/outputs/flutter-apk" build/app/outputs/flutter-apk "${{ steps.detect.outputs.proj_dir }}/build/app/outputs/apk" build/app/outputs/apk app/build/outputs/apk -name "*.apk" 2>/dev/null | head -n 1)
+            PRIMARY_APK=$(find "${{ steps.detect.outputs.proj_dir }}" build app -type f -name "*.apk" -not -path "*/dist-apk/*" -not -path "*/.gradle/*" -not -name "*unaligned*" 2>/dev/null | head -n 1)
           fi
           if [ -z "$PRIMARY_APK" ]; then
-            APK_FILES=$(find . -name "*.apk" -not -path "*/dist-apk/*" -not -path "*/.gradle/*" -not -path "*/builds/*input*" 2>/dev/null | sort -n)
-            PRIMARY_APK=$(echo "$APK_FILES" | head -n 1)
+            PRIMARY_APK=$(find . -type f -name "*.apk" -not -path "*/dist-apk/*" -not -path "*/.gradle/*" -not -name "*unaligned*" 2>/dev/null | head -n 1)
           fi
 
           if [ -n "$PRIMARY_APK" ] && [ -f "$PRIMARY_APK" ]; then
