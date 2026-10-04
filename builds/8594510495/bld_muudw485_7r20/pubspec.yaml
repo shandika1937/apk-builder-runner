@@ -10,8 +10,6 @@ environment:
 dependencies:
   flutter:
     sdk: flutter
-
-  # Network, parsing, cryptographic deps
   http: ^1.2.2
   graphql: ^5.1.3
   html: ^0.15.6
@@ -28,7 +26,6 @@ dependencies:
   local_auth: ^2.3.0
   intl: ^0.20.2
   path_provider: ^2.1.5
-  # Core utils
   awesome_notifications: ^0.11.0
   package_info_plus: ^9.0.0
   permission_handler: ^11.3.0
@@ -42,13 +39,11 @@ dependencies:
   cupertino_icons: ^1.0.8
   shared_preferences: ^2.2.2
   wakelock_plus: ^1.4.0
-  # Local storage
   hive: ^2.2.3
   hive_flutter: ^1.1.0
   flutter_secure_storage: ^10.0.0
   flutter_svg: ^2.1.0
   dartssh2: ^2.9.1
-  # Media and player related
   just_audio: ^0.10.1
   video_player: ^2.9.2
   audioplayers: ^6.5.1
@@ -60,8 +55,6 @@ dependencies:
     git:
       url: https://github.com/frostnova721/betterplayer.git
   video_player_win: ^3.1.1
-
-  # UI
   pull_to_refresh: ^2.0.0
   flutter_markdown_plus: ^1.0.7
   desktop_webview_window: ^0.2.3
@@ -78,8 +71,6 @@ dependencies:
       url: https://github.com/YuiHrsw/window_manager.git
       path: packages/window_manager
       ref: windows_fullscreen_fix
-
-  # Misc
   flutter_native_splash: ^2.4.7
   share_plus: ^12.0.2
   clipboard: ^0.1.3
@@ -100,8 +91,6 @@ dependencies:
   wifi_scan: ^0.4.1+2
   wifi_iot: ^0.3.19+2
   fl_chart: ^1.2.0
-
-  # TabunganKu dependencies
   flutter_riverpod: ^2.4.9
   riverpod_annotation: ^2.3.3
   google_fonts: 8.0.2
@@ -140,39 +129,31 @@ dependency_overrides:
 
 flutter:
   uses-material-design: true
-
   assets:
     - assets/
     - assets/images/
     - assets/fonts/
     - assets/videos/
     - lib/assets/fonts/
-    
   fonts:
     - family: Orbitron
       fonts:
-        - asset: fonts/Rajdhani-Regular.ttf
-
+        - asset: assets/fonts/Poppins-Regular.ttf
     - family: ShareTechMono
       fonts:
-        - asset: fonts/Rajdhani-Regular.ttf
-
+        - asset: assets/fonts/Poppins-Medium.ttf
     - family: Debrosee
       fonts:
-        - asset: fonts/Rajdhani-Regular.ttf
-
+        - asset: assets/fonts/Poppins-Bold.ttf
     - family: Aloevera
       fonts:
-        - asset: fonts/Aloevera-OVoWO.ttf
-        
+        - asset: assets/fonts/Aloevera-OVoWO.ttf
     - family: Aktura
       fonts:
-        - asset: fonts/Aktura-Regular.ttf
-        
+        - asset: assets/fonts/Aktura-Regular.ttf
     - family: Uthmanic
       fonts:
-        - asset: fonts/Uthmanic.ttf
-
+        - asset: assets/fonts/Uthmanic.ttf
     - family: Poppins
       fonts:
         - asset: assets/fonts/Poppins-Regular.ttf
